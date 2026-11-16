@@ -2090,7 +2090,7 @@ def discard_deferred_wakeups_for_session(session_id: str) -> None:
 
 
 def _agent_read_exited_output(session_id: str, process_id: str) -> bool:
-    """True when the transcript holds a process_manage result showing this process exited.
+    """True when the transcript holds a process_manage result showing this process ended (exited/killed).
 
     The registry "consumed" flag cannot tell: this module sets it itself when it defers.
     """
@@ -2111,7 +2111,7 @@ def _agent_read_exited_output(session_id: str, process_id: str) -> bool:
             continue
         c = m.get("content")
         text = c if isinstance(c, str) else json.dumps(c, default=str)
-        if process_id in text and re.search(r'"status":\s*"exited"', text):
+        if process_id in text and re.search(r'"status":\s*"(?:exited|killed)"', text):
             return True
     return False
 

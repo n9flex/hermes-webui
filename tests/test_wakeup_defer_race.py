@@ -32,6 +32,8 @@ same way tests/test_session_channel_option_x.py does.
 from __future__ import annotations
 
 import queue
+
+import pytest
 import threading
 import types
 
@@ -680,7 +682,8 @@ def test_idle_path_409_redefer_carries_process_id_and_dedups(monkeypatch):
         _reset_cfg_state()
 
 
-def test_deferred_wakeup_skipped_when_output_already_consumed(monkeypatch):
+@pytest.mark.parametrize("status", ["exited", "killed"])
+def test_deferred_wakeup_skipped_when_output_already_consumed(monkeypatch, status):
     """The agent waited on the process inside the turn: teardown must not start a turn."""
     from api import background_process as bp, config as cfg
 
@@ -702,7 +705,7 @@ def test_deferred_wakeup_skipped_when_output_already_consumed(monkeypatch):
         # process_manage wait() in the same turn: its result is in the transcript.
         import api.models as models
         waited = {"role": "tool", "tool_name": "process_manage",
-                  "content": '{"status": "exited", "session_id": "proc-waited-1", "exit_code": 0}'}
+                  "content": '{"status": "%s", "session_id": "proc-waited-1"}' % status}
         monkeypatch.setattr(models, "get_session",
                             lambda _sid: types.SimpleNamespace(messages=[waited]))
 
