@@ -678,3 +678,41 @@ def test_idle_path_409_redefer_carries_process_id_and_dedups(monkeypatch):
     finally:
         bp.unregister_process_session(sid)
         _reset_cfg_state()
+
+
+def test_deferred_wakeup_skipped_when_output_already_consumed(monkeypatch):
+    """The agent waited on the process inside the turn: teardown must not start a turn."""
+    from api import background_process as bp, config as cfg
+
+    fake = _FakeProcessRegistry()
+    fake.register("proc-waited-1", "sess-waited")
+    _install_fake_registry(monkeypatch, fake)
+    _reset_cfg_state()
+    holder = _install_fake_start_session_turn(monkeypatch)
+
+    sid = "sess-waited"
+    stream_id = "stream-waited-1"
+    bp.register_process_session(sid, sid)
+    try:
+        with cfg.ACTIVE_RUNS_LOCK:
+            cfg.ACTIVE_RUNS[stream_id] = {"session_id": sid}
+        bp._process_one(_completion_evt("proc-waited-1", sid))
+        assert cfg.DEFERRED_PROCESS_WAKEUPS[sid][0]["process_id"] == "proc-waited-1"
+
+        # process_manage wait() in the same turn: its result is in the transcript.
+        import api.models as models
+        waited = {"role": "tool", "tool_name": "process_manage",
+                  "content": '{"status": "exited", "session_id": "proc-waited-1", "exit_code": 0}'}
+        monkeypatch.setattr(models, "get_session",
+                            lambda _sid: types.SimpleNamespace(messages=[waited]))
+
+        cfg.unregister_active_run(stream_id)
+        assert bp.drain_deferred_wakeups_for_session(sid) == 0
+        assert holder["event"].wait(timeout=0.5) is False
+        assert holder["calls"] == []
+        assert sid not in cfg.DEFERRED_PROCESS_WAKEUPS
+    finally:
+        with cfg.ACTIVE_RUNS_LOCK:
+            cfg.ACTIVE_RUNS.pop(stream_id, None)
+        bp.unregister_process_session(sid)
+        _reset_cfg_state()

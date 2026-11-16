@@ -2795,3 +2795,41 @@ def test_rotated_session_stream_end_uses_original_stream_owner_id(tmp_path, monk
         f"owner {session_id!r}; the client SSE fence would reject it and the "
         "EventSource would stay open"
     )
+
+
+@pytest.mark.parametrize("pick_matches", [True, False])
+def test_process_wakeup_keeps_the_model_the_user_picked(tmp_path, monkeypatch, pick_matches):
+    """A hand-picked model survives a wakeup; without a matching pick the resolver still decides."""
+    from api.models import model_explicit_pick_signature
+
+    session = Session(
+        session_id=f"wakeup_keeps_pick_{pick_matches}",
+        title="Wakeup keeps pick",
+        workspace=str(tmp_path),
+        model="@anthropic:claude-opus-5-5",
+        model_provider="anthropic",
+        model_explicit_pick_signature=(
+            model_explicit_pick_signature("@anthropic:claude-opus-5-5", "anthropic")
+            if pick_matches else model_explicit_pick_signature("other-model", "other")),
+        messages=[{"role": "user", "content": "Earlier prompt", "timestamp": 1}],
+        context_messages=[{"role": "user", "content": "Earlier prompt"}],
+    )
+    session.save()
+    models.SESSIONS[session.session_id] = session
+    # The resolver falls back to the profile default, as it did on the real session.
+    _patch_process_wakeup_route(
+        monkeypatch, tmp_path, model="deepseek-v4-1-flash-1017-high", provider="devin-acp")
+    seen = {}
+
+    def _capture_start_run(_s, **kwargs):
+        seen.update(model=kwargs["model"], provider=kwargs["model_provider"])
+        return {"_status": 200, "stream_id": "s1", "session_id": _s.session_id}
+
+    monkeypatch.setattr(routes, "_start_run", _capture_start_run)
+    routes.start_session_turn(
+        session.session_id, "[IMPORTANT: Background process p completed.]", source="process_wakeup")
+
+    if pick_matches:
+        assert seen == {"model": "@anthropic:claude-opus-5-5", "provider": "anthropic"}
+    else:
+        assert seen == {"model": "deepseek-v4-1-flash-1017-high", "provider": "devin-acp"}

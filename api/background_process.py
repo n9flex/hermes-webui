@@ -2089,6 +2089,33 @@ def discard_deferred_wakeups_for_session(session_id: str) -> None:
         )
 
 
+def _agent_read_exited_output(session_id: str, process_id: str) -> bool:
+    """True when the transcript holds a process_manage result showing this process exited.
+
+    The registry "consumed" flag cannot tell: this module sets it itself when it defers.
+    """
+    if not process_id:
+        return False
+    import json
+    import re
+    try:
+        from api.models import get_session
+        messages = getattr(get_session(session_id), "messages", None) or []
+    except Exception:
+        logger.debug("session load failed on deferred drain for %s", session_id, exc_info=True)
+        return False
+    for m in reversed(messages):
+        if not isinstance(m, dict) or m.get("role") != "tool":
+            continue
+        if (m.get("tool_name") or m.get("name")) != "process_manage":
+            continue
+        c = m.get("content")
+        text = c if isinstance(c, str) else json.dumps(c, default=str)
+        if process_id in text and re.search(r'"status":\s*"exited"', text):
+            return True
+    return False
+
+
 def drain_deferred_wakeups_for_session(
     session_id: str, *, retry_attempt: int = 0
 ) -> int:
@@ -2157,6 +2184,9 @@ def drain_deferred_wakeups_for_session(
         # which matches the single-prompt-per-turn design and the
         # BG_TASK_COMPLETE_EVENTS_SEEN dedup (no double-fire).
         leftover = [e for e in entries if str((e or {}).get("wakeup_prompt") or "").strip()]
+        # Output already read in the turn (wait/log): a wakeup would start an unasked turn.
+        leftover = [e for e in leftover if not _agent_read_exited_output(
+            session_id, str((e or {}).get("process_id") or ""))]
         if leftover:
             first = leftover[0]
             # Re-defer entries 2..N BEFORE starting the first turn, so they are

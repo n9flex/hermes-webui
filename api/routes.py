@@ -28088,6 +28088,11 @@ def start_session_turn(
         profile=getattr(s, "profile", None),
         prefer_cached_catalog=True,
     )
+    # A model the user picked by hand is kept: a wakeup must not fall back to the profile default.
+    from api.models import model_explicit_pick_signature as _mk_sig
+    _pick = getattr(s, "model_explicit_pick_signature", None)
+    if requested_model and _pick and _pick == _mk_sig(requested_model, requested_provider):
+        model, model_provider, normalized_model = requested_model, requested_provider, False
     _paused_wakeup_response = None
     with _get_session_agent_lock(s.session_id):
         try:
