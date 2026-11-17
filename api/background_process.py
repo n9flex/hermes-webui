@@ -2089,10 +2089,38 @@ def discard_deferred_wakeups_for_session(session_id: str) -> None:
         )
 
 
+def _call_ids_naming_process(messages, process_id: str) -> set:
+    """tool_call_ids whose arguments name ``process_id``, direct or nested in a tool_call wrapper."""
+    import json
+
+    def _names(node) -> bool:
+        if isinstance(node, dict):
+            return any(_names(v) for v in node.values())
+        if isinstance(node, list):
+            return any(_names(v) for v in node)
+        return node == process_id
+
+    ids = set()
+    for m in messages:
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        for tc in m.get("tool_calls") or []:
+            fn = (tc or {}).get("function") or {}
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except (TypeError, ValueError):
+                continue
+            if _names(args) and (tc or {}).get("id"):
+                ids.add(tc["id"])
+    return ids
+
+
 def _agent_read_exited_output(session_id: str, process_id: str) -> bool:
     """True when the transcript holds a process_manage result showing this process ended (exited/killed).
 
-    The registry "consumed" flag cannot tell: this module sets it itself when it defers.
+    A ``wait`` result does not echo the process id, so it is matched through the call's arguments
+    (also when nested in the ``tool_call`` wrapper). The registry "consumed" flag cannot tell:
+    this module sets it itself when it defers.
     """
     if not process_id:
         return False
@@ -2104,6 +2132,7 @@ def _agent_read_exited_output(session_id: str, process_id: str) -> bool:
     except Exception:
         logger.debug("session load failed on deferred drain for %s", session_id, exc_info=True)
         return False
+    named = _call_ids_naming_process(messages, process_id)
     for m in reversed(messages):
         if not isinstance(m, dict) or m.get("role") != "tool":
             continue
@@ -2111,7 +2140,9 @@ def _agent_read_exited_output(session_id: str, process_id: str) -> bool:
             continue
         c = m.get("content")
         text = c if isinstance(c, str) else json.dumps(c, default=str)
-        if process_id in text and re.search(r'"status":\s*"(?:exited|killed)"', text):
+        if not re.search(r'"status":\s*"(?:exited|killed)"', text):
+            continue
+        if process_id in text or m.get("tool_call_id") in named:
             return True
     return False
 

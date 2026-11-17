@@ -719,3 +719,40 @@ def test_deferred_wakeup_skipped_when_output_already_consumed(monkeypatch, statu
             cfg.ACTIVE_RUNS.pop(stream_id, None)
         bp.unregister_process_session(sid)
         _reset_cfg_state()
+
+
+def test_deferred_wakeup_skipped_when_wait_result_omits_the_process_id(monkeypatch):
+    """A real wait result has no process id and the call sits inside the tool_call wrapper."""
+    import json
+    from api import background_process as bp, config as cfg
+
+    fake = _FakeProcessRegistry()
+    fake.register("proc-waited-2", "sess-waited-2")
+    _install_fake_registry(monkeypatch, fake)
+    _reset_cfg_state()
+    holder = _install_fake_start_session_turn(monkeypatch)
+
+    sid, stream_id = "sess-waited-2", "stream-waited-2"
+    bp.register_process_session(sid, sid)
+    try:
+        with cfg.ACTIVE_RUNS_LOCK:
+            cfg.ACTIVE_RUNS[stream_id] = {"session_id": sid}
+        bp._process_one(_completion_evt("proc-waited-2", sid))
+
+        import api.models as models
+        call = {"role": "assistant", "tool_calls": [{"id": "t1", "function": {
+            "name": "tool_call", "arguments": json.dumps({"calls": [{"name": "process_manage",
+                "arguments": {"action": "wait", "session_id": "proc-waited-2"}}]})}}]}
+        result = {"role": "tool", "tool_name": "process_manage", "tool_call_id": "t1",
+                  "content": '{"status": "exited", "command": "sleep 1", "exit_code": 0}'}
+        monkeypatch.setattr(models, "get_session",
+                            lambda _sid: types.SimpleNamespace(messages=[call, result]))
+
+        cfg.unregister_active_run(stream_id)
+        assert bp.drain_deferred_wakeups_for_session(sid) == 0
+        assert holder["calls"] == []
+    finally:
+        with cfg.ACTIVE_RUNS_LOCK:
+            cfg.ACTIVE_RUNS.pop(stream_id, None)
+        bp.unregister_process_session(sid)
+        _reset_cfg_state()
